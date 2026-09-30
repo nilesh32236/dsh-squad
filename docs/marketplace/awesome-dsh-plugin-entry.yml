@@ -1,0 +1,12 @@
+# Entry for the awesome-dsh-plugin registry.
+#
+# Submit as a PR adding ONE file at data/plugins/nilesh32236__dsh-squad.yml in
+# https://github.com/awesome-dsh-plugin/awesome-dsh-plugin
+#
+# The registry requires the repository to be at least 1 day old, and CI checks it
+# automatically; a PR opened the same day the repo was created is rejected.
+url: https://github.com/nilesh32236/dsh-squad
+name: nilesh32236/dsh-squad
+category: workflow
+description:
+  en: 'Cross-workspace worker fleets: one orchestrating session creates named worker sessions in other project workspaces, queues or steers tasks into them, watches them in the background, collects their reports, and answers their escalations.'

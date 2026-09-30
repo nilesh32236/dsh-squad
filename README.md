@@ -230,6 +230,48 @@ The bundle ships five presets: **Orchestrator**, **Squad Worker**,
 > carries the full plugin list of the shipped `standard` preset with only the
 > `persona` row replaced. `verify-presets.py` asserts that structurally.
 
+## Permissions and data
+
+Stated plainly, because installing a plugin runs third-party code with your
+permissions.
+
+**What it writes**
+- `$DSH_HOME/squad/roster.json` — the worker roster and collected reports.
+- `$DSH_HOME/squad/campaigns/<orchestrator-session>/` — archived reports,
+  escalations, and `INDEX.md`.
+- A `squad:<name>` **title** on each worker session it creates.
+- A model selection on each worker session, only when you set
+  `defaultProvider`/`defaultModel`.
+
+**What it creates and drives**
+- It creates DSH sessions and sends them prompts. Those sessions run *your*
+  configured model and spend your tokens. That is the plugin's whole purpose, so
+  treat the orchestrator as able to dispatch work on your behalf.
+- Worker approvals and sandbox boundaries are the harness's, not this plugin's.
+  It does not grant a worker any capability the harness would otherwise refuse.
+  A worker is confined to its own workspace by the session sandbox.
+
+**Network and credentials**
+- The plugin itself makes **no network calls** and reads **no credentials**. Its
+  only I/O is the files listed above and the DSH session services it is handed.
+- Workers reach the network only through the tools their own preset gives them.
+
+**Compatibility**
+- Requires DSH `>= 0.1.7-rc.1`.
+- `squad_watch` needs `@deepseek-ai/dsh-tool-jobs` in the agent preset (it ships
+  in the standard DSH web profile). Where it is absent, that one tool reports so
+  and the rest of the plugin is unaffected.
+
+## Marketplace
+
+Indexed by the community hubs, which read this repository directly:
+
+- **[dsh-plugin.org](https://dsh-plugin.org)** — auto-discovered from the
+  `dsh-plugin` GitHub topic.
+- **[dsh-market](https://github.com/dsh-market/dsh-market)** — listed via a PR to
+  the [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
+  registry.
+
 ## Docs
 
 - [`docs/ORCHESTRATOR-GUIDE.md`](docs/ORCHESTRATOR-GUIDE.md) — how to run a campaign well
