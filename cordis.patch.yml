@@ -10,7 +10,7 @@
 #   python3 verify-presets.py
 - insert:
     - id: squad
-      name: 'dsh-squad'
+      name: '@nilesh32236/dsh-squad'
       config:
         # Worker model route. Both empty means workers inherit the session
         # default, which is right for a shared install. To PIN every worker to

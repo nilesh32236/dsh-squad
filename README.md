@@ -57,10 +57,12 @@ sits and waits) and **spinning** (it polls in a loop, burning tokens).
 
 ## Install
 
-### From GitHub
+### From npm (or straight from GitHub)
 
 ```sh
-dsh plugin --profile web add github:nilesh32236/dsh-squad
+dsh plugin --profile web add @nilesh32236/dsh-squad
+# or straight from GitHub, same plugin:
+# dsh plugin --profile web add github:nilesh32236/dsh-squad
 ```
 
 Then enable the bundle in the plugin manager and **restart** DSH — plugin
