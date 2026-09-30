@@ -1,0 +1,67 @@
+{
+  "name": "dsh-squad",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Cross-workspace worker sessions for the DeepSeek Harness: spawn named workers in other projects, queue or steer tasks into them, watch them in the background, collect their reports, and answer their escalations.",
+  "icon": "./icon.svg",
+  "main": "./fleet.js",
+  "exports": {
+    ".": "./fleet.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*": "./locale/*"
+  },
+  "files": [
+    "fleet.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale",
+    "docs"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "agent",
+    "orchestrator",
+    "multi-agent",
+    "agent-team",
+    "fleet"
+  ],
+  "license": "MIT",
+  "author": "Nilesh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nilesh32236/dsh-squad.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nilesh32236/dsh-squad/issues"
+  },
+  "homepage": "https://github.com/nilesh32236/dsh-squad#readme",
+  "engines": {
+    "dsh": ">=0.1.7-rc.1"
+  },
+  "meta": {
+    "title": "Squad Orchestrator",
+    "description": "Runs and coordinates worker sessions in other workspaces, with task queueing, steering, background watching, status inspection, report collection, and escalation."
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node smoke-test.mjs",
+    "verify-presets": "python3 verify-presets.py",
+    "generate-presets": "python3 generate-presets.py",
+    "dev-links": "node tools/dev-links.mjs"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1-rc.1",
+    "@deepseek-ai/dsh": ">=0.1.7-rc.1 <0.2.0",
+    "@deepseek-ai/dsh-tools": "^0.1.7-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.3"
+  }
+}

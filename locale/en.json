@@ -1,0 +1,4 @@
+{
+  "title": "Squad Orchestrator",
+  "description": "Runs and coordinates worker sessions in other workspaces, with task queueing, steering, status inspection, report collection, and escalation."
+}

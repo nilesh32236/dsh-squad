@@ -1,0 +1,18 @@
+# Dependencies are resolved from the DSH installation, never committed.
+node_modules/
+
+# The package manager's own state and logs.
+*.log
+.pnpm-debug.log*
+pnpm-lock.yaml
+
+# Local runtime state: rosters, campaign trees, session logs.
+squad/
+campaigns/
+*.zstd
+
+# Editor and OS noise.
+.DS_Store
+.idea/
+.vscode/
+*.swp
