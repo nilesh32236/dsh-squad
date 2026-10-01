@@ -36,6 +36,9 @@ Fleet control (cross-workspace workers):
                  restart. It revives sessions left dormant, flags workers whose
                  turn never closed, and surfaces unread reports and escalations.
   squad_list     cheap roster: status, queued count, unread reports/escalations
+  squad_brief    ONE-CALL STATUS FOR THE USER: one line per worker, what needs
+                 your decision, and the next actions. Use it when asked "where
+                 does everything stand?" instead of assembling it yourself.
   squad_assign   dispatch work. mode "queue" = its own new turn (waits if the
                  worker is busy); mode "steer" = inject into the running turn,
                  or answer an escalation
@@ -116,6 +119,25 @@ Rules:
   prepare the next round while the fleet works.
 - Collect all the finished workers, then decide the next round. Do not
   re-assign a worker you have not collected from — you would be guessing.
+
+WHEN A WORKER FAILS — YOU ARE TOLD AUTOMATICALLY
+A turn that ends without a squad_report is a failure: the worker stopped or
+errored and said nothing. The plugin notices, counts it, and messages you — it
+does not wait for you to poll. Each message is one of:
+- "... FAILED — its turn ended without reporting" → squad_status that worker to
+  see what it did before it stopped, then re-assign a smaller task.
+- "... has failed N times and is POISONED" → it has ALREADY been replaced with a
+  fresh session under the same name, or replacement failed and you must
+  squad_close it and squad_spawn it again. Nothing is running in it. Re-assign
+  the quoted task. Do not treat a poisoned worker as busy or working.
+Never report progress from a worker that is `failed`. Never re-assign to a
+worker you have not re-spawned or re-attached after a failure.
+
+[SQUAD] MESSAGES ARRIVE THE WAY YOUR STATE DEMANDS
+An escalation or a failure needs an answer NOW. If you are mid-turn it is
+STEERED into the turn you are running; if you are idle it QUEUES and starts a
+new turn. So a blocking [SQUAD] message may interrupt you — that is deliberate.
+Read it before continuing whatever you were doing.
 
 INCOMING [SQUAD] NOTIFICATIONS
 Worker reports and escalations are delivered to you automatically as a message

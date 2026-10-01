@@ -121,6 +121,7 @@ need it.
 | --- | --- |
 | `squad_spawn` | Create or **adopt** a worker bound to another workspace. Idempotent by name. Registers an unknown `cwd` as a new workspace. |
 | `squad_resume` | Re-attach every worker and report what each needs. **Call this first whenever you resume**, and after any restart. |
+| `squad_brief` | One-call status **for reporting to the user**: one line per worker, what needs your decision, the next actions. |
 | `squad_list` | The roster: project, status, queued tasks, unread reports and escalations. |
 | `squad_assign` | Send a task. `queue` = its own new turn; `steer` = inject into the running turn. Also how you answer an escalation. |
 | `squad_wait` | Block until workers finish. `mode: "all"` gathers a whole fan-out in one call. |
@@ -194,6 +195,43 @@ record beside it, readable with nothing but a file browser. It is keyed to the
 
 ---
 
+## When a worker fails
+
+**A turn that ends without a `squad_report` is a failure.** That is the signal,
+because it covers a model error, an abandoned turn, and a session killed
+mid-flight the same way — and unlike a platform `error` event, it is always
+present.
+
+The plugin detects it, counts it, and **tells the orchestrator** rather than
+waiting to be polled:
+
+```
+[SQUAD] Worker "reviewer" (my-frontend) FAILED — its turn ended without reporting.
+That is failure 1 of 3 before it is replaced.
+```
+
+Each closed turn is judged exactly once, so polling never double-counts or
+re-notifies. At `maxWorkerFailures` the worker is **poisoned**: it is replaced
+with a fresh session under the same name, workspace and task history, and the
+orchestrator is told to re-assign.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `maxWorkerFailures` | `3` | Consecutive report-less turns before a worker is replaced. `0` disables. |
+| `autoReplaceFailedWorker` | `true` | Replace it automatically instead of only advising. |
+| `failureSettleMs` | `15000` | Grace period before a just-closed turn is judged, so the error can land first. |
+
+### Escalations and failures interrupt; reports do not
+
+A **blocking** message is delivered adaptively:
+
+| Orchestrator state | Delivery | Why |
+| --- | --- | --- |
+| mid-turn (`running`) | **`steer`** | A blocked worker is answered *this* turn, not stranded behind whatever long turn happens to be running. |
+| idle | **`queue`** | Starts a fresh turn; nothing is interrupted. |
+
+A report is never urgent, so it always queues.
+
 ## Status values
 
 | Status | Meaning |
@@ -203,6 +241,7 @@ record beside it, readable with nothing but a file browser. It is keyed to the
 | `stuck` | Running with no log growth past `stuckAfterMs`. |
 | `reported` | Submitted a report the orchestrator has not collected. |
 | `needs-answer` | Blocked on an unanswered `ask_user_question`. Nobody watches a worker's session, so an outstanding question would otherwise wedge it silently. |
+| `failed` | A turn closed without a report. Counted; replaced at `maxWorkerFailures`. |
 | `dormant` | On the roster but not attached to a live session — restored after a restart. Re-attached automatically. |
 | `unattachable` | Could not be re-attached; the reason is reported. |
 

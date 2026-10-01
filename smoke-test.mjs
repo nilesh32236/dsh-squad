@@ -25,6 +25,7 @@ function makeHost() {
 		{ id: 'w-perf', title: 'performance-optimisation', path: '/var/www/site/wp-content/plugins/performance-optimisation' }
 	]
 	const created = []
+	let nextSessionId = 0
 	const cancelled = []
 	const prompted = []
 	// Durable session titles, as the real Host keeps them: a `session/title`
@@ -102,7 +103,9 @@ function makeHost() {
 					adopted.push(request.sessionId)
 					return { sessionId: request.sessionId }
 				}
-				const id = `session-test-${created.length}`
+				// A counter, not created.length: a session can be adopted or replaced, so
+			// the array length is not a unique allocator and would reuse ids.
+			const id = `session-test-${nextSessionId++}`
 				created.push(request)
 				agents.set(id, makeAgent(id))
 				// The real Host always stamps a cwd into the session header — the
@@ -638,6 +641,101 @@ const pinnedSpawn = await pinnedByName.get('squad_spawn').execute({ name: 'pinne
 if (pinnedSpawn.worker.model !== 'acme/vision-1') throw new Error(`pinned worker reported model ${pinnedSpawn.worker.model}`)
 console.log('  pinned route       -> reported as acme/vision-1')
 
+// ---- pass 9: failure detection, replacement, and adaptive delivery -------
+// A turn that closes WITHOUT a squad_report is the failure signal. It is the
+// only signal that covers a model error, an abandoned turn, and a killed
+// session the same way.
+const waitFor = async (fn, ms = 3000) => {
+	const start = Date.now()
+	while (Date.now() - start < ms) {
+		if (fn()) return true
+		await new Promise(resolve => setTimeout(resolve, 10))
+	}
+	return false
+}
+const failHome = mkdtempSync(join(tmpdir(), 'squad-test-fail-'))
+process.env.DSH_HOME = failHome
+const failHost = makeHost()
+apply(failHost.ctx, { maxWorkerFailures: 3, failureSettleMs: 1, pollMs: 10 })
+const failByName = new Map(failHost.registered.map(t => [t.name, t]))
+const failExec = { agent: { id: OWNER }, signal: new AbortController().signal }
+const failSpawn = await failByName.get('squad_spawn').execute({ name: 'flaky', project: 'performance-optimisation' }, failExec)
+const flakyId = failSpawn.worker.session_id
+const flakyAgent = failHost.agents.get(flakyId)
+
+// A closed turn that DID report is not a failure.
+failHost.appendEvent(flakyId, { type: 'turn/start', data: { turn: 1 } })
+failHost.appendEvent(flakyId, { type: 'tool/call', data: { callId: 'r1', name: 'squad_report', arguments: '{}' } })
+failHost.appendEvent(flakyId, { type: 'turn/end', data: { turn: 1 } })
+let brief = await failByName.get('squad_brief').execute({}, failExec)
+if (brief.failed.includes('flaky')) throw new Error('a turn that reported was called a failure')
+
+// Now a closed turn that reported nothing: that is a failure, and it must
+// reach the orchestrator.
+const beforeFail = failHost.prompted.filter(p => p.sessionId === OWNER).length
+failHost.appendEvent(flakyId, { type: 'turn/start', data: { turn: 2 } })
+failHost.appendEvent(flakyId, { type: 'turn/end', data: { turn: 2 } })
+if (!await waitFor(() => failHost.prompted.filter(p => p.sessionId === OWNER).length === beforeFail + 1)) {
+	throw new Error('the background poller never reported the failed turn')
+}
+brief = await failByName.get('squad_brief').execute({}, failExec)
+if (!brief.failed.includes('flaky')) throw new Error('a silent turn was not reported as a failure')
+if (!failHost.prompted.at(-1).content.map(c => c.text).join(' ').includes('FAILED')) throw new Error('failure notice is not labelled FAILED')
+console.log('  failed turn        -> detected and the orchestrator told')
+
+// Idempotence: let several more poll ticks pass. The SAME turn must not notify
+// again, or a long pollMs would spam the orchestrator on every tick.
+const afterFirst = failHost.prompted.length
+await new Promise(resolve => setTimeout(resolve, 150))
+if (failHost.prompted.length !== afterFirst) throw new Error('re-polling the same failed turn notified again')
+console.log('  failure idempotent -> one notification per turn, not per poll')
+
+// Delivery is adaptive. A BUSY orchestrator is steered, so a blocked worker is
+// answered this turn instead of being stranded behind a long-running one.
+failHost.agents.set(OWNER, failHost.makeAgent(OWNER))
+failHost.agents.get(OWNER).status = 'running'
+failHost.appendEvent(flakyId, { type: 'turn/start', data: { turn: 3 } })
+failHost.appendEvent(flakyId, { type: 'turn/end', data: { turn: 3 } })
+const beforeSteer = failHost.prompted.length
+if (!await waitFor(() => failHost.prompted.length === beforeSteer + 1)) throw new Error('no notification for the steered failure')
+if (failHost.prompted.at(-1).mode !== 'steer') throw new Error(`busy orchestrator got mode ${failHost.prompted.at(-1).mode}, expected steer`)
+console.log('  urgent + running   -> steered, so the answer lands this turn')
+
+// An IDLE orchestrator is queued instead: a fresh turn, not a mid-turn injection.
+failHost.agents.get(OWNER).status = 'idle'
+// Capture the session count BEFORE the turn that reaches the limit, because
+// reaching it is what triggers the replacement.
+const sessionBefore = failHost.created.length
+failHost.appendEvent(flakyId, { type: 'turn/start', data: { turn: 4 } })
+failHost.appendEvent(flakyId, { type: 'turn/end', data: { turn: 4 } })
+const beforeQueue = failHost.prompted.length
+if (!await waitFor(() => failHost.prompted.length === beforeQueue + 1)) throw new Error('no notification for the queued failure')
+if (failHost.prompted.at(-1).mode !== 'queue') throw new Error(`idle orchestrator got mode ${failHost.prompted.at(-1).mode}, expected queue`)
+console.log('  urgent + idle      -> queued, starting a fresh turn')
+
+// That third silent turn reaches the limit, so the worker is POISONED: replaced
+// with a fresh session under the same name and workspace, with the orchestrator
+// told to re-assign. Nothing is running in it afterwards.
+if (!await waitFor(() => failHost.created.length === sessionBefore + 1)) throw new Error('poisoned worker was never replaced')
+const afterReplace = await failByName.get('squad_list').execute({}, failExec)
+const flaky = afterReplace.workers.find(w => w.name === 'flaky')
+if (flaky.session_id === flakyId) throw new Error('replacement reused the broken session')
+if (flaky.status === 'failed') throw new Error('a replaced worker is still marked failed')
+const notice = failHost.prompted.at(-1).content.map(c => c.text).join(' ')
+if (!notice.includes('REPLACED')) throw new Error('replacement was not announced to the orchestrator')
+if (!notice.includes('Re-assign')) throw new Error('replacement notice does not ask for a re-assign')
+console.log(`  poisoned replaced  -> new session ${flaky.session_id}, re-assign requested`)
+
+// The replacement starts clean: a new turn that reports is a success, not a
+// failure, so the counter does not immediately re-poison the fresh session.
+failHost.appendEvent(flaky.session_id, { type: 'turn/start', data: { turn: 1 } })
+failHost.appendEvent(flaky.session_id, { type: 'tool/call', data: { callId: 'ok1', name: 'squad_report', arguments: '{}' } })
+failHost.appendEvent(flaky.session_id, { type: 'turn/end', data: { turn: 1 } })
+await new Promise(resolve => setTimeout(resolve, 150))
+const afterClean = await failByName.get('squad_brief').execute({}, failExec)
+if (afterClean.failed.includes('flaky')) throw new Error('a healthy replacement is still counted as failed')
+console.log('  replacement healthy-> counter reset, a reporting turn is not a failure')
+
 console.log('\nPASS 2: all execute bodies ran clean')
 console.log('PASS 3: roster survives a plugin reload and re-adopts')
 console.log('PASS 4: a lost roster recovers by durable title instead of duplicating')
@@ -645,3 +743,4 @@ console.log('PASS 5: resume re-attaches, detects interrupted turns, and is inspe
 console.log('PASS 6: artifacts survive structured values, and mode:"all" gathers a fan-out')
 console.log('PASS 7: squad_watch runs in the background and answers inline when settled')
 console.log('PASS 8: a worker report or escalation WAKES an idle orchestrator')
+console.log('PASS 9: silent turns are detected, notified, steered/queued adaptively, and a poisoned worker is replaced')

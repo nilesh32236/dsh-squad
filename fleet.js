@@ -78,6 +78,28 @@ const Config = z.object({
 	 * that a worker finished until it happens to poll.
 	 */
 	notifyOnReport: z.boolean().default(true),
+	/**
+	 * A turn that ends without a `squad_report` is a FAILED turn: the worker
+	 * stopped, or errored, and told nobody. How many consecutive such turns
+	 * before the worker is treated as poisoned and replaced.
+	 *
+	 * 0 disables failure handling entirely. A report is what marks a turn
+	 * successful, so this counts turns that produced none.
+	 */
+	maxWorkerFailures: z.number().step(1).min(0).max(20).default(3),
+	/**
+	 * When a worker reaches `maxWorkerFailures`, replace it automatically: a
+	 * fresh session in the same workspace, roster record re-pointed, task
+	 * history preserved. The orchestrator is told and re-assigns. Without this
+	 * the orchestrator is only advised to do it, and a blocked session may sit
+	 * there until it notices.
+	 */
+	autoReplaceFailedWorker: z.boolean().default(true),
+	/**
+	 * How long a failed turn must be settled before it is judged. A turn still
+	 * running is never a failure, and an error is judged once it is recorded.
+	 */
+	failureSettleMs: z.number().step(1).min(1_000).default(15_000),
 	/** How often the background poller refreshes worker activity stamps. */
 	pollMs: z.number().step(1).min(5_000).default(20_000),
 	/** Cap on any text block this plugin hands back to a model. */
@@ -95,6 +117,9 @@ function resolveConfig(config) {
 		workerPreset: '',
 		stuckAfterMs: 900_000,
 		notifyOnReport: true,
+		maxWorkerFailures: 3,
+		autoReplaceFailedWorker: true,
+		failureSettleMs: 15_000,
 		pollMs: 20_000,
 		maxTextChars: 4000,
 		maxWaitMs: 600_000
@@ -346,21 +371,82 @@ function apply(ctx, config) {
 	 *
 	 * @returns a short delivery outcome, surfaced to the worker and the orchestrator.
 	 */
-	async function notifyOrchestrator(ownerSessionId, text, signal) {
+	async function notifyOrchestrator(ownerSessionId, text, signal, options = {}) {
 		if (cfg.notifyOnReport !== true) return 'disabled'
 		if (!hasText(ownerSessionId)) return 'no orchestrator session'
+		// A BLOCKING message (an escalation, or a worker that has failed) must
+		// reach a busy orchestrator mid-turn: queueing it would strand the worker
+		// behind whatever turn happens to be running, which can be a very long
+		// one. Steer delivers at the next step boundary, so the orchestrator
+		// answers while still able to act. Anything non-blocking queues instead, so
+		// it never interrupts work that was already in flight.
+		const running = ctx.agents.get(ownerSessionId)?.status === 'running'
+		const mode = options.urgent === true && running ? 'steer' : 'queue'
 		try {
 			await ctx.sessionController.prompt({
 				requestId: `squad-notify-${randomUUID()}`,
 				sessionId: ownerSessionId,
-				mode: 'queue',
+				mode,
 				content: [{ type: 'text', text: truncate(text, cfg.maxTextChars) }]
 			}, signal ?? new AbortController().signal)
-			return 'delivered'
+			return mode
 		} catch (error) {
 			// Never fail the report itself over a notification: the roster and the
 			// campaign tree still hold it, and the orchestrator can still collect.
 			return `failed: ${String(error)}`
+		}
+	}
+
+	/**
+	 * Replace a poisoned worker with a fresh session in the same workspace.
+	 *
+	 * The session is the thing that is broken, so the fix is a new one — reusing
+	 * the old id would re-adopt the same bad state. Task history and the name
+	 * stay, so the orchestrator re-assigns under the same identity, and the model
+	 * route and preset are re-applied exactly as a spawn would.
+	 */
+	async function replaceFailedWorker(rec) {
+		const oldSessionId = rec.sessionId
+		try {
+			const old = ctx.agents.get(oldSessionId)
+			if (old !== undefined) {
+				try {
+					old.cancel({ kind: 'hook', reason: 'squad-replace-failed-worker' }, { keepInbox: false })
+				} catch {
+					// Already idle; nothing to stop.
+				}
+			}
+			const created = await ctx.sessionController.create({
+				workspaceId: rec.workspaceId,
+				...(hasText(rec.preset) ? { agentPreset: rec.preset } : {})
+			})
+			rec.sessionId = created.sessionId
+			rec.failures = 0
+			rec.lastOutcomeTurn = null
+			rec.adoptError = undefined
+			rec.replacedFrom = oldSessionId
+			rec.replacedAt = Date.now()
+			// Keep the last task so the orchestrator can re-issue it verbatim.
+			rec.needsReassign = true
+			await markTitle(rec.sessionId, rec.name)
+			if (hasText(cfg.defaultProvider) && hasText(cfg.defaultModel)) {
+				try {
+					await ctx.sessionController.selectModel({
+						sessionId: rec.sessionId,
+						provider: cfg.defaultProvider,
+						model: cfg.defaultModel,
+						...(hasText(cfg.defaultReasoningEffort) ? { reasoningEffort: cfg.defaultReasoningEffort } : {})
+					})
+				} catch {
+					// The replacement still works on the session default.
+				}
+			}
+			saveRoster()
+			return rec.sessionId
+		} catch (error) {
+			rec.adoptError = String(error)
+			saveRoster()
+			return undefined
 		}
 	}
 
@@ -600,6 +686,65 @@ function apply(ctx, config) {
 	 * balanced log is genuinely between tasks rather than interrupted. Verified
 	 * against real logs before wiring it up.
 	 */
+	/**
+	 * Decide whether a worker's most recent turn FAILED, i.e. ended without a
+	 * `squad_report`.
+	 *
+	 * A `squad_report` is the only thing that marks a turn as finished work, so
+	 * "a turn closed and nothing was reported" is the one signal that covers the
+	 * real failure modes uniformly — a model error, a turn the driver abandoned, a
+	 * session killed mid-flight — without depending on a platform `error` event,
+	 * which is not always written.
+	 *
+	 * A turn still open is never a failure, and a turn that did report is a
+	 * success however it went.
+	 *
+	 * @returns 'reported' | 'failed' | 'in-progress' | 'idle'
+	 */
+	function lastTurnOutcome(events) {
+		let turnEnd = -1
+		for (let i = events.length - 1; i >= 0; i -= 1) {
+			if (events[i].type === 'turn/end') {
+				turnEnd = i
+				break
+			}
+			// An open turn means the driver is still working: never a failure.
+			if (events[i].type === 'turn/start') return 'in-progress'
+		}
+		if (turnEnd < 0) return 'idle'
+		for (let i = turnEnd - 1; i >= 0; i -= 1) {
+			if (events[i].type === 'turn/start') break
+			if (events[i].type === 'tool/call' && events[i].data?.name === 'squad_report') return 'reported'
+		}
+		return 'failed'
+	}
+
+	/**
+	 * Fold a worker's last turn into its failure count.
+	 *
+	 * Each closed turn is judged exactly once, keyed on its closing event's seq,
+	 * so the background poller cannot inflate the count by re-observing it. A
+	 * just-closed turn waits `failureSettleMs` for the error to land first.
+	 *
+	 * @returns 'failed' when this turn just became a new failure, else null.
+	 */
+	function foldFailure(rec, events) {
+		if (cfg.maxWorkerFailures === 0 || events === undefined) return null
+		if (lastTurnOutcome(events) !== 'failed') return null
+		const settled = rec.lastActivityAt === 0 || Date.now() - rec.lastActivityAt >= cfg.failureSettleMs
+		if (!settled) return null
+		const turnSeq = events[events.length - 1]?.seq ?? -1
+		if (rec.lastOutcomeTurn === turnSeq) return null
+		rec.lastOutcomeTurn = turnSeq
+		rec.failures = (rec.failures ?? 0) + 1
+		return 'failed'
+	}
+
+	/** Whether a worker has failed too often to keep trusting. */
+	function isPoisoned(rec) {
+		return cfg.maxWorkerFailures > 0 && (rec.failures ?? 0) >= cfg.maxWorkerFailures
+	}
+
 	function interruptedTurn(events) {
 		let open = 0
 		for (const event of events) {
@@ -635,6 +780,9 @@ function apply(ctx, config) {
 		if (agent === undefined) return rec.adoptError === undefined ? 'dormant' : 'unattachable'
 		if (events !== undefined && pendingQuestions(events).length > 0) return 'needs-answer'
 		if (agent.status !== 'running') {
+			// A turn that closed without reporting is a failure, and outranks
+			// "reported"/"idle" in the status a human reads.
+			if (rec.failures > 0 && rec.lastOutcomeTurn !== null) return 'failed'
 			if (rec.reports.length > 0) return 'reported'
 			return 'idle'
 		}
@@ -1069,6 +1217,80 @@ function apply(ctx, config) {
 	}
 
 	ctx.tools.register(defineTool({
+		name: 'squad_brief',
+		description: 'A compact fleet status for reporting to the user: one line per worker, what is blocked or failed, what needs YOUR decision, and the next actions. Use this instead of squad_list when the question is "where does everything stand?" — it answers in one call, in prose rather than XML.',
+		parameters: {
+			names: { type: 'array', description: 'Worker names or session ids to cover. Omit for the whole fleet.' }
+		},
+		output: RESULT_OUTPUT,
+		async execute(args, exec) {
+			const kit = watchKit(exec, args.names)
+			const workers = await kit.snapshot()
+			if (workers.length === 0) return { workers: [], summary: 'No workers on the roster. Call squad_spawn to create the fleet.' }
+
+			const working = workers.filter(w => w.status === 'working')
+			const failed = workers.filter(w => w.status === 'failed')
+			const blocked = workers.filter(w => w.status === 'needs-answer' || w.unread_escalations > 0)
+			const reported = workers.filter(w => w.status === 'reported' || w.unread_reports > 0)
+			const stuck = workers.filter(w => w.status === 'stuck')
+			const idle = workers.filter(w => w.status === 'idle' || w.status === 'dormant')
+
+			const roster = workers.map(w => {
+				const state = w.status === 'failed' ? 'FAILED' : w.status === 'needs-answer' ? 'BLOCKED' : w.status.toUpperCase()
+				const task = w.last_task === null ? 'no task yet' : truncate(w.last_task, 90)
+				return `  ${w.name.padEnd(14)} ${state.padEnd(10)} ${task}`
+			}).join('\n')
+
+			const decisions = []
+			for (const w of blocked) {
+				const question = w.open_questions?.[0]?.question
+				decisions.push(`  ${w.name} is blocked and produces nothing until answered.${hasText(question) ? `\n    asks: ${truncate(question, 200)}` : ''}\n    -> squad_status "${w.name}", then squad_assign mode:"steer"`)
+			}
+			for (const w of failed) {
+				decisions.push(`  ${w.name} failed without reporting. It is replaced once it reaches the failure limit.\n    -> squad_status "${w.name}" to see what it did before it stopped`)
+			}
+			for (const w of stuck) {
+				decisions.push(`  ${w.name} is running but has produced nothing for a long time.\n    -> squad_status "${w.name}"; squad_stop it and re-assign a smaller task if it is wedged`)
+			}
+
+			const next = []
+			for (const w of reported) next.push(`  collect ${w.name} (${w.unread_reports} report(s) waiting) and verify the claims`)
+			if (working.length > 0) next.push(`  ${working.map(w => w.name).join(', ')} still working — do not re-assign, collect when they report`)
+			if (idle.length > 0) next.push(`  ${idle.map(w => w.name).join(', ')} idle with nothing pending — assign the next task deliberately`)
+			if (next.length === 0) next.push('  nothing is outstanding')
+
+			const campaign = writeCampaignIndex(exec.agent.id)
+			const headline = [
+				`${workers.length} worker(s): ${working.length} working, ${reported.length} waiting to be collected, ${failed.length} failed, ${blocked.length} blocked, ${idle.length} idle.`,
+				failed.length > 0 || blocked.length > 0 ? 'Something needs you.' : reported.length > 0 ? 'Results are waiting.' : 'The fleet is running as expected.'
+			].join(' ')
+
+			return {
+				workers,
+				working: working.map(w => w.name),
+				failed: failed.map(w => w.name),
+				blocked: blocked.map(w => w.name),
+				campaign_dir: campaign ?? null,
+				summary: [
+					headline,
+					'',
+					'FLEET',
+					roster,
+					'',
+					'NEEDS YOUR DECISION',
+					decisions.length === 0 ? '  nothing' : decisions.join('\n'),
+					'',
+					'NEXT',
+					next.join('\n'),
+					campaign === undefined ? '' : `\nCampaign memory: ${campaign} (notes/ and tasks/ are yours to keep)`,
+					''
+				].join('\n')
+			}
+		},
+		presentCall: () => ({ card: 'generic', title: 'Squad brief', kind: 'read' })
+	}))
+
+	ctx.tools.register(defineTool({
 		name: 'squad_watch',
 		description: 'Wait for workers IN THE BACKGROUND and be woken when they finish, so you can keep working meanwhile. Returns immediately with a job id; the completion notice wakes you with the result. Use this instead of squad_wait when a fan-out will take a while. mode "all" (default) wakes when every watched worker has settled.',
 		parameters: {
@@ -1383,7 +1605,7 @@ function apply(ctx, config) {
 			return {
 				reported: true,
 				status: args.status,
-				orchestrator_notified: notified === 'delivered',
+				orchestrator_notified: notified === 'delivered' || notified === 'steer' || notified === 'queue',
 				summary: `Reported "${args.status}" to orchestrator ${rec.owner} (${notified}).${archived === undefined ? '' : ' Archived to the campaign tree.'}`
 			}
 		},
@@ -1414,16 +1636,20 @@ function apply(ctx, config) {
 			archiveToCampaign(rec.owner, 'escalation', rec, escalation)
 			// An escalation means the worker is stopped until answered, so the
 			// orchestrator has to be woken rather than left to discover it.
+			// Urgent: a busy orchestrator is STEERED so the answer arrives this
+			// turn instead of after whatever long turn is already running.
 			const notified = await notifyOrchestrator(
 				rec.owner,
 				`[SQUAD] Worker "${rec.name}" (${rec.project}) is BLOCKED and needs your answer:\n\n${truncate(args.question, 1200)}${hasText(args.context) ? `\n\nContext: ${truncate(args.context, 800)}` : ''}\n\nCall squad_status "${rec.name}" for detail, then answer with squad_assign mode:"steer". It produces nothing until you do.`,
-				exec?.signal
+				exec?.signal,
+				{ urgent: true }
 			)
 			touch(rec)
 			saveRoster()
 			return {
 				escalated: true,
-				orchestrator_notified: notified === 'delivered',
+				orchestrator_notified: notified === 'delivered' || notified === 'steer' || notified === 'queue',
+				delivery: notified,
 				summary: `Escalated to orchestrator ${rec.owner} (${notified}): ${args.question}`
 			}
 		},
@@ -1431,17 +1657,69 @@ function apply(ctx, config) {
 	}))
 
 	// Keep each worker's activity stamp fresh so `statusOf` can tell a busy
-	// worker from a wedged one. Only RUNNING workers are polled: an idle worker
-	// cannot change without a new prompt, and refreshActivity reads the whole
-	// event list, so polling idle workers would burn O(log length) every tick
-	// for no signal.
+	// worker from a wedged one, AND catch turns that closed without a report.
+	//
+	// The failure sweep deliberately covers IDLE workers too: a failed turn ends
+	// by going idle, so a sweep that only watched running workers would miss the
+	// exact case it is looking for. The extra cost is one pass per poll per idle
+	// worker, which is bounded by the roster rather than by log length.
 	const poll = setInterval(() => {
 		for (const rec of roster.values()) {
 			const agent = ctx.agents.get(rec.sessionId)
-			if (agent === undefined || agent.status !== 'running') continue
-			void refreshActivity(rec)
+			if (agent === undefined) continue
+			if (agent.status === 'running') void refreshActivity(rec)
+			void sweepFailures(rec)
 		}
 	}, cfg.pollMs)
+
+	/**
+	 * Fold a worker's outcome, and act on a failure the first time it is seen.
+	 *
+	 * Idempotent by construction: `foldFailure` only fires once per closed turn,
+	 * so a fast poller cannot notify repeatedly about the same failure.
+	 */
+	async function sweepFailures(rec) {
+		try {
+			const events = await ctx.sessionQuery.listEvents(rec.sessionId)
+			if (foldFailure(rec, events) === null) return
+			touch(rec)
+			const failures = rec.failures ?? 0
+			const last = rec.tasks[rec.tasks.length - 1]?.text ?? '(unknown task)'
+
+			// Past the limit: the session is the broken part, so replace it and
+			// tell the orchestrator to re-issue. The name, workspace and task
+			// history survive, so the identity is stable across the swap.
+			if (isPoisoned(rec)) {
+				let replacement
+				if (cfg.autoReplaceFailedWorker) {
+					replacement = await replaceFailedWorker(rec)
+				}
+				const note = replacement === undefined
+					? `It has now failed ${failures} times and COULD NOT be replaced automatically (${rec.adoptError ?? 'unknown error'}). Close it with squad_close and spawn it again.`
+					: `It failed ${failures} times, so it has been REPLACED with a fresh session ${replacement}. Nothing is running in it. Re-assign the task:\n\n${last}`
+				await notifyOrchestrator(
+					rec.owner,
+					`[SQUAD] Worker "${rec.name}" (${rec.project}) has failed ${failures} times and is producing nothing.\n\n${note}\n\nThen squad_resume to confirm the new state.`,
+					undefined,
+					{ urgent: true }
+				)
+				touch(rec)
+				saveRoster()
+				return
+			}
+
+			await notifyOrchestrator(
+				rec.owner,
+				`[SQUAD] Worker "${rec.name}" (${rec.project}) FAILED — its turn ended without reporting.\nThat is failure ${failures} of ${cfg.maxWorkerFailures} before it is replaced.\n\nLast task:\n${last}\n\nCall squad_status "${rec.name}" to see what it did before it stopped.`,
+				undefined,
+				{ urgent: true }
+			)
+			touch(rec)
+			saveRoster()
+		} catch {
+			// A disposed or unreadable worker is reported through `status` instead.
+		}
+	}
 	poll.unref?.()
 	ctx.effect(() => () => clearInterval(poll))
 }
