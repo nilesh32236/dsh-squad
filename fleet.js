@@ -712,10 +712,21 @@ function apply(ctx, config) {
 			if (events[i].type === 'turn/start') return 'in-progress'
 		}
 		if (turnEnd < 0) return 'idle'
+		let attempted = false
 		for (let i = turnEnd - 1; i >= 0; i -= 1) {
 			if (events[i].type === 'turn/start') break
-			if (events[i].type === 'tool/call' && events[i].data?.name === 'squad_report') return 'reported'
+			if (events[i].type === 'tool/call') {
+				attempted = true
+				if (events[i].data?.name === 'squad_report') return 'reported'
+			}
 		}
+		// A closed turn that attempted nothing (no tool calls — e.g. a wake
+		// turn with nothing queued) is idle, not failed. Counting it as a
+		// failure punishes the worker for the driver's own empty turn and
+		// produces "FAILED without reporting" notices for turns that were
+		// never asked to produce anything, including turns after an
+		// already-collected report.
+		if (!attempted) return 'idle'
 		return 'failed'
 	}
 
@@ -1574,6 +1585,11 @@ function apply(ctx, config) {
 		async execute(args, exec) {
 			const rec = selfRecord(exec)
 			if (rec === undefined) throw refuse('this session is not a squad worker; only sessions created by squad_spawn should report')
+			// A report with no summary is vacuous: it marks the turn
+			// "reported" (defeating the failure detector) while telling the
+			// orchestrator nothing. Reject it so the worker retries with real
+			// content instead of ending the turn on an empty call.
+			if (!hasText(args.summary)) throw refuse('squad_report needs a non-empty summary: one or two sentences saying what you did and what the outcome is')
 			const report = {
 				id: randomUUID(),
 				at: Date.now(),
