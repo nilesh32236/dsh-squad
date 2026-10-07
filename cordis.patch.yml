@@ -205,6 +205,8 @@
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
@@ -219,6 +221,8 @@
               sampleOverCapGlobResults: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill
@@ -282,12 +286,24 @@
                   toolName: subagent
                   modelSelectionSettings: true
                   backgroundMode: continuable
+                  toolFilter:
+                    deny:
+                      - schedule_create
+                      - schedule_delete
+                      - schedule_list
+                      - schedule_update
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: fork
                   toolName: subagent_fork
                   backgroundMode: continuable
+                  toolFilter:
+                    deny:
+                      - schedule_create
+                      - schedule_delete
+                      - schedule_list
+                      - schedule_update
               - id: tool-subagent-codex
                 name: '@deepseek-ai/dsh-tool-subagent'
                 disabled: true
@@ -371,6 +387,8 @@
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
@@ -385,6 +403,8 @@
               sampleOverCapGlobResults: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill
@@ -448,12 +468,24 @@
                   toolName: subagent
                   modelSelectionSettings: true
                   backgroundMode: continuable
+                  toolFilter:
+                    deny:
+                      - schedule_create
+                      - schedule_delete
+                      - schedule_list
+                      - schedule_update
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: fork
                   toolName: subagent_fork
                   backgroundMode: continuable
+                  toolFilter:
+                    deny:
+                      - schedule_create
+                      - schedule_delete
+                      - schedule_list
+                      - schedule_update
               - id: tool-subagent-codex
                 name: '@deepseek-ai/dsh-tool-subagent'
                 disabled: true
@@ -530,6 +562,8 @@
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
@@ -544,6 +578,8 @@
               sampleOverCapGlobResults: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill
@@ -607,12 +643,24 @@
                   toolName: subagent
                   modelSelectionSettings: true
                   backgroundMode: continuable
+                  toolFilter:
+                    deny:
+                      - schedule_create
+                      - schedule_delete
+                      - schedule_list
+                      - schedule_update
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: fork
                   toolName: subagent_fork
                   backgroundMode: continuable
+                  toolFilter:
+                    deny:
+                      - schedule_create
+                      - schedule_delete
+                      - schedule_list
+                      - schedule_update
               - id: tool-subagent-codex
                 name: '@deepseek-ai/dsh-tool-subagent'
                 disabled: true
@@ -690,6 +738,8 @@
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
@@ -704,6 +754,8 @@
               sampleOverCapGlobResults: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill
@@ -767,12 +819,24 @@
                   toolName: subagent
                   modelSelectionSettings: true
                   backgroundMode: continuable
+                  toolFilter:
+                    deny:
+                      - schedule_create
+                      - schedule_delete
+                      - schedule_list
+                      - schedule_update
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: fork
                   toolName: subagent_fork
                   backgroundMode: continuable
+                  toolFilter:
+                    deny:
+                      - schedule_create
+                      - schedule_delete
+                      - schedule_list
+                      - schedule_update
               - id: tool-subagent-codex
                 name: '@deepseek-ai/dsh-tool-subagent'
                 disabled: true
@@ -848,6 +912,8 @@
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
@@ -862,6 +928,8 @@
               sampleOverCapGlobResults: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill
@@ -925,12 +993,24 @@
                   toolName: subagent
                   modelSelectionSettings: true
                   backgroundMode: continuable
+                  toolFilter:
+                    deny:
+                      - schedule_create
+                      - schedule_delete
+                      - schedule_list
+                      - schedule_update
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: fork
                   toolName: subagent_fork
                   backgroundMode: continuable
+                  toolFilter:
+                    deny:
+                      - schedule_create
+                      - schedule_delete
+                      - schedule_list
+                      - schedule_update
               - id: tool-subagent-codex
                 name: '@deepseek-ai/dsh-tool-subagent'
                 disabled: true
